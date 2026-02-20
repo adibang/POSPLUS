@@ -1,5 +1,4 @@
 // ==================== FIREBASE INITIALIZATION ====================
-// GANTI DENGAN KONFIGURASI FIREBASE ANDA
 const firebaseConfig = {
     apiKey: "AIzaSyCVB9Y4jLWRFsVLbnnL4-6wGcShtvozUY",
     authDomain: "populus-32429.firebaseapp.com",
@@ -54,6 +53,40 @@ async function firebaseGet(collectionName, id) {
 async function firebaseSet(collectionName, id, data) {
     await firestore.collection(collectionName).doc(id).set(data);
     return id;
+}
+
+// ==================== CACHE HELPERS ====================
+const CACHE_KEYS = {
+    KASIR_CATEGORIES: 'cache_kasirCategories',
+    KASIR_SATUAN: 'cache_kasirSatuan',
+    KASIR_ITEMS: 'cache_kasirItems',
+    CUSTOMERS: 'cache_customers',
+    SUPPLIERS: 'cache_suppliers',
+    PENDING: 'cache_pendingTransactions'
+};
+
+function getCachedData(key, maxAge = 5 * 60 * 1000) { // 5 menit default
+    const cached = sessionStorage.getItem(key);
+    if (!cached) return null;
+    try {
+        const { timestamp, data } = JSON.parse(cached);
+        if (Date.now() - timestamp < maxAge) {
+            return data;
+        }
+    } catch (e) {}
+    return null;
+}
+
+function setCachedData(key, data) {
+    const cacheEntry = {
+        timestamp: Date.now(),
+        data: data
+    };
+    sessionStorage.setItem(key, JSON.stringify(cacheEntry));
+}
+
+function clearCache() {
+    Object.values(CACHE_KEYS).forEach(key => sessionStorage.removeItem(key));
 }
 
 // ==================== FUNGSI UNTUK SUBMENU SIDEBAR ====================
@@ -451,12 +484,12 @@ async function importData() {
                         await firebaseSet(collections.SETTINGS, set.key, rest);
                     }
 
-                    await loadKasirCategories();
-                    await loadKasirItems();
-                    await loadKasirSatuan();
-                    await loadCustomers();
-                    await loadSuppliers();
-                    await loadPendingTransactions();
+                    await loadKasirCategories(true);
+                    await loadKasirItems(true);
+                    await loadKasirSatuan(true);
+                    await loadCustomers(true);
+                    await loadSuppliers(true);
+                    await loadPendingTransactions(true);
                     showNotification('Data berhasil diimport!', 'success');
                     resolve(true);
                 } catch (error) {
@@ -489,6 +522,7 @@ async function clearAllData() {
             customers = [];
             suppliers = [];
             pendingTransactions = [];
+            clearCache();
             updatePendingBadge();
             showNotification('Semua data berhasil dihapus!', 'success');
         } catch (error) {
@@ -781,7 +815,7 @@ function hideError() {
     if (mainContent) mainContent.style.display = 'block';
 }
 
-// ==================== LOAD DATA DARI FIRESTORE ====================
+// ==================== LOAD DATA DARI FIRESTORE DENGAN CACHE ====================
 async function loadBarcodeConfig() {
     try {
         const doc = await firestore.collection(collections.SETTINGS).doc('barcodeConfig').get();
@@ -824,84 +858,99 @@ async function loadReceiptConfig() {
     }
 }
 
-async function saveReceiptConfig() {
-    const paperWidth = parseInt(document.getElementById('receipt-paper-width').value);
-    if (isNaN(paperWidth) || paperWidth < 10) {
-        showNotification('Lebar kertas minimal 10 karakter', 'error');
-        return;
+async function loadKasirCategories(forceRefresh = false) {
+    if (!forceRefresh) {
+        const cached = getCachedData(CACHE_KEYS.KASIR_CATEGORIES);
+        if (cached) {
+            kasirCategories = cached;
+            return;
+        }
     }
-
-    const headerRaw = document.getElementById('receipt-header').value;
-    const footerRaw = document.getElementById('receipt-footer').value;
-    const header = headerRaw.replace(/\\n/g, '\n');
-    const footer = footerRaw.replace(/\\n/g, '\n');
-
-    const showDateTime = document.getElementById('receipt-show-datetime').checked;
-    const showTransactionNumber = document.getElementById('receipt-show-transnum').checked;
-    const showCashier = document.getElementById('receipt-show-cashier').checked;
-
-    const newConfig = {
-        paperWidth,
-        header,
-        footer,
-        showDateTime,
-        showTransactionNumber,
-        showCashier
-    };
-
-    try {
-        showLoading();
-        await firebaseSet(collections.SETTINGS, 'receiptConfig', newConfig);
-        receiptConfig = newConfig;
-        showNotification('Pengaturan struk tersimpan', 'success');
-        closeSettingsModal();
-    } catch (error) {
-        showNotification('Gagal menyimpan: ' + error.message, 'error');
-    } finally {
-        hideLoading();
-    }
-}
-
-async function loadKasirCategories() {
     try { 
         kasirCategories = await firebaseGetAll(collections.KASIR_CATEGORIES); 
         kasirCategories.sort((a,b) => a.name.localeCompare(b.name)); 
+        setCachedData(CACHE_KEYS.KASIR_CATEGORIES, kasirCategories);
     } catch (error) { console.error('Error loading kasir categories:', error); kasirCategories = []; }
 }
 
-async function loadKasirItems() {
+async function loadKasirItems(forceRefresh = false) {
+    if (!forceRefresh) {
+        const cached = getCachedData(CACHE_KEYS.KASIR_ITEMS);
+        if (cached) {
+            kasirItems = cached;
+            kasirItems.forEach(item => { if (item.stock === undefined) item.stock = 0; });
+            currentFilteredItems = [...kasirItems];
+            return;
+        }
+    }
     try { 
         kasirItems = await firebaseGetAll(collections.KASIR_ITEMS); 
         kasirItems.forEach(item => { if (item.stock === undefined) item.stock = 0; });
-        kasirItems.sort((a,b) => a.name.localeCompare(b.name)); 
+        kasirItems.sort((a,b) => a.name.localeCompare(b.name));
+        setCachedData(CACHE_KEYS.KASIR_ITEMS, kasirItems);
+        currentFilteredItems = [...kasirItems];
     } catch (error) { console.error('Error loading kasir items:', error); kasirItems = []; }
 }
 
-async function loadKasirSatuan() {
+async function loadKasirSatuan(forceRefresh = false) {
+    if (!forceRefresh) {
+        const cached = getCachedData(CACHE_KEYS.KASIR_SATUAN);
+        if (cached) {
+            kasirSatuan = cached;
+            return;
+        }
+    }
     try { 
         kasirSatuan = await firebaseGetAll(collections.KASIR_SATUAN); 
         kasirSatuan.sort((a,b) => a.name.localeCompare(b.name)); 
+        setCachedData(CACHE_KEYS.KASIR_SATUAN, kasirSatuan);
     } catch (error) { console.error('Error loading satuan:', error); kasirSatuan = []; }
 }
 
-async function loadCustomers() {
+async function loadCustomers(forceRefresh = false) {
+    if (!forceRefresh) {
+        const cached = getCachedData(CACHE_KEYS.CUSTOMERS);
+        if (cached) {
+            customers = cached;
+            customers.forEach(c => { if (c.outstanding === undefined) c.outstanding = 0; });
+            return;
+        }
+    }
     try { 
         customers = await firebaseGetAll(collections.CUSTOMERS); 
         customers.forEach(c => { if (c.outstanding === undefined) c.outstanding = 0; });
         customers.sort((a,b) => a.name.localeCompare(b.name)); 
+        setCachedData(CACHE_KEYS.CUSTOMERS, customers);
     } catch (error) { console.error('Error loading customers:', error); customers = []; }
 }
 
-async function loadSuppliers() {
+async function loadSuppliers(forceRefresh = false) {
+    if (!forceRefresh) {
+        const cached = getCachedData(CACHE_KEYS.SUPPLIERS);
+        if (cached) {
+            suppliers = cached;
+            return;
+        }
+    }
     try { 
         suppliers = await firebaseGetAll(collections.SUPPLIERS); 
         suppliers.sort((a,b) => a.name.localeCompare(b.name)); 
+        setCachedData(CACHE_KEYS.SUPPLIERS, suppliers);
     } catch (error) { console.error('Error loading suppliers:', error); suppliers = []; }
 }
 
-async function loadPendingTransactions() {
+async function loadPendingTransactions(forceRefresh = false) {
+    if (!forceRefresh) {
+        const cached = getCachedData(CACHE_KEYS.PENDING);
+        if (cached) {
+            pendingTransactions = cached;
+            updatePendingBadge();
+            return;
+        }
+    }
     try { 
         pendingTransactions = await firebaseGetAll(collections.PENDING_TRANSACTIONS); 
+        setCachedData(CACHE_KEYS.PENDING, pendingTransactions);
         updatePendingBadge();
     } catch (error) { 
         console.error('Error loading pending transactions:', error); 
@@ -917,6 +966,7 @@ async function savePendingTransaction(transactionData) {
         const id = await firebaseAdd(collections.PENDING_TRANSACTIONS, data);
         data.id = id;
         pendingTransactions.push(data);
+        setCachedData(CACHE_KEYS.PENDING, pendingTransactions); // update cache
         updatePendingBadge();
         return data;
     } catch (error) {
@@ -929,6 +979,7 @@ async function deletePendingTransaction(id) {
     try {
         await firebaseDelete(collections.PENDING_TRANSACTIONS, id);
         pendingTransactions = pendingTransactions.filter(t => t.id !== id);
+        setCachedData(CACHE_KEYS.PENDING, pendingTransactions); // update cache
         updatePendingBadge();
     } catch (error) {
         console.error('Error deleting pending transaction:', error);
@@ -936,9 +987,30 @@ async function deletePendingTransaction(id) {
     }
 }
 
+// ==================== LOAD DATA AWAL SECARA PARALEL ====================
+async function loadInitialData() {
+    showLoading();
+    try {
+        await Promise.all([
+            loadBarcodeConfig(),
+            loadReceiptConfig(),
+            loadKasirCategories(),
+            loadKasirSatuan(),
+            loadCustomers(),
+            loadSuppliers(),
+            loadPendingTransactions()
+        ]);
+        await loadKasirItems(); // item butuh data lain? tidak, tapi bisa dijalankan setelah atau paralel juga.
+    } catch (error) {
+        console.error('Error loading initial data:', error);
+        showError('Gagal memuat data awal.');
+    } finally {
+        hideLoading();
+    }
+}
+
 // ==================== FUNGSI UNTUK CEK DAN SET STATUS UNLOCKED (localStorage) ====================
 function checkUnlockedStatus() {
-    // Langsung baca dari localStorage
     const unlocked = localStorage.getItem('appUnlocked') === 'true';
     appUnlocked = unlocked;
     return unlocked;
@@ -967,7 +1039,7 @@ function showLoginScreen() {
             overlay.style.opacity = '0';
             setTimeout(() => {
                 overlay.style.display = 'none';
-                setAppUnlocked(); // Simpan ke localStorage
+                setAppUnlocked();
             }, 500);
         }
     });
@@ -1528,8 +1600,12 @@ async function executePayment(paidTotal, outstandingAdded) {
             transactionNumber: transactionNumber
         };
 
-        await loadKasirItems();
-        await loadCustomers();
+        // Muat ulang data dengan force refresh
+        await Promise.all([
+            loadKasirItems(true),
+            loadCustomers(true)
+        ]);
+
         renderProductList();
         showNotification(`Pembayaran berhasil (${payments.map(p => p.method).join(', ')})${outstandingAdded>0 ? ' (dengan piutang)' : ''}`, 'success');
         
@@ -1864,7 +1940,7 @@ async function updateStock(itemId) {
             item.stock = newStock;
             item.updatedAt = new Date().toISOString();
             await firebasePut(collections.KASIR_ITEMS, item);
-            await loadKasirItems();
+            await loadKasirItems(true); // refresh cache
             showNotification('Stok diperbarui', 'success');
             openInventoryStokModal();
         }
@@ -2226,21 +2302,11 @@ async function generateTransactionNumber() {
 async function initApp() {
     try {
         console.log('Starting app initialization...');
-        showLoading();
         hideError();
-        await loadBarcodeConfig();
-        await loadReceiptConfig();
-        await loadKasirCategories();
-        await loadKasirItems();
-        currentFilteredItems = [...kasirItems];
-        await loadKasirSatuan();
-        await loadCustomers();
-        await loadSuppliers();
-        await loadPendingTransactions();
+        await loadInitialData(); // memuat semua data dengan cache dan paralel
         await loadCartFromLocalStorage();
         await autoReconnectPrinter();
 
-        // Cek status unlock dari localStorage
         if (!checkUnlockedStatus()) {
             showLoginScreen();
         } else {
@@ -2253,7 +2319,7 @@ async function initApp() {
         console.error('Error initializing app:', error);
         let errorMessage = 'Gagal memuat aplikasi: ' + error.message;
         showError(errorMessage);
-    } finally { hideLoading(); }
+    }
 }
 
 async function retryAppLoad() { await initApp(); }
@@ -2287,19 +2353,18 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { co
 async function refreshData() {
     try {
         showLoading();
-        await loadKasirCategories();
-        await loadKasirItems();
-        await loadKasirSatuan();
-        await loadCustomers();
-        await loadSuppliers();
-        await loadPendingTransactions();
+        clearCache(); // opsional, tapi kita bisa langsung panggil dengan forceRefresh
+        await Promise.all([
+            loadKasirCategories(true),
+            loadKasirItems(true),
+            loadKasirSatuan(true),
+            loadCustomers(true),
+            loadSuppliers(true),
+            loadPendingTransactions(true)
+        ]);
         console.log('Data refreshed successfully');
     } catch (error) { console.error('Error refreshing data:', error); } finally { hideLoading(); }
 }
-
-// ==================== INCLUDE MASTER-DATA.JS FUNCTIONS ====================
-// master-data.js
-// Fungsi-fungsi master data yang menggunakan Firestore
 
 // ==================== FUNGSI MODAL KATEGORI ====================
 function openTambahKategoriKasirModal(editId = null) {
