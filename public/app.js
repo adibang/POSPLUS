@@ -1,26 +1,3 @@
-// ==================== FIREBASE INITIALIZATION ====================
-const firebaseConfig = {
-    apiKey: "AIzaSyCVB9Y4jLWRFsVLbnnL4-6wGcShtvozUY",
-    authDomain: "populus-32429.firebaseapp.com",
-    projectId: "populus-32429",
-    storageBucket: "populus-32429.firebasestorage.app",
-    messagingSenderId: "5210906605",
-    appId: "1:5210906605:web:7a59fbf83cb0f66ac11162"
-};
-firebase.initializeApp(firebaseConfig);
-const firestore = firebase.firestore();
-
-// Aktifkan offline persistence
-firestore.enablePersistence()
-    .then(() => console.log('Offline persistence enabled'))
-    .catch(err => {
-        if (err.code == 'failed-precondition') {
-            console.warn('Persistence failed: multiple tabs open');
-        } else if (err.code == 'unimplemented') {
-            console.warn('Persistence not supported by browser');
-        }
-    });
-
 // ==================== KOLEKSI FIRESTORE ====================
 const collections = {
     SETTINGS: 'settings',
