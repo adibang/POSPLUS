@@ -1,3 +1,26 @@
+// ==================== FIREBASE INITIALIZATION ====================
+const firebaseConfig = {
+    apiKey: "AIzaSyCVB9V4jLWRFrsVLBnnL4-0wGCshtvozUY",
+    authDomain: "posplus-32429.firebaseapp.com",
+    projectId: "posplus-32429",
+    storageBucket: "posplus-32429.firebasestorage.app",
+    messagingSenderId: "5210906695",
+    appId: "1:5210906695:web:7a59f0f83c3bf06ac11162"
+  };
+firebase.initializeApp(firebaseConfig);
+const firestore = firebase.firestore();
+
+// Aktifkan offline persistence
+firestore.enablePersistence()
+    .then(() => console.log('Offline persistence enabled'))
+    .catch(err => {
+        if (err.code == 'failed-precondition') {
+            console.warn('Persistence failed: multiple tabs open');
+        } else if (err.code == 'unimplemented') {
+            console.warn('Persistence not supported by browser');
+        }
+    });
+
 // ==================== KOLEKSI FIRESTORE ====================
 const collections = {
     SETTINGS: 'settings',
@@ -8,8 +31,7 @@ const collections = {
     SUPPLIERS: 'suppliers',
     PENDING_TRANSACTIONS: 'pendingTransactions',
     SALES: 'sales',
-    PURCHASES: 'purchases',
-    TRANSACTIONS: 'transaksi'  // NEW: koleksi untuk transaksi pribadi
+    PURCHASES: 'purchases'
 };
 
 // ==================== FUNGSI HELPER FIRESTORE ====================
@@ -67,10 +89,7 @@ function getCachedData(key, maxAge = 5 * 60 * 1000) {
 }
 
 function setCachedData(key, data) {
-    const cacheEntry = {
-        timestamp: Date.now(),
-        data: data
-    };
+    const cacheEntry = { timestamp: Date.now(), data };
     sessionStorage.setItem(key, JSON.stringify(cacheEntry));
 }
 
@@ -346,10 +365,6 @@ let cart = [];
 let productViewMode = 'list';
 let lastTransactionData = null;
 
-// NEW: Variabel untuk transaksi dashboard
-let transactions = [];
-let transactionsUnsubscribe = null;
-
 // Variabel untuk printer serial
 let printerPort = null;
 // Variabel untuk pembayaran kombinasi
@@ -359,6 +374,11 @@ let pendingTotalPaid = 0;
 // ==================== VARIABEL UNTUK LOGIN OVERLAY ====================
 let loginTapCount = 0;
 let appUnlocked = false;
+
+// ==================== LISTENER UNSUBSCRIBE FUNCTIONS ====================
+let unsubscribeItems = null;
+let unsubscribePending = null;
+let unsubscribeCustomers = null;
 
 const icons = {
     edit: `<svg class="icon" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
@@ -477,12 +497,11 @@ async function importData() {
                         await firebaseSet(collections.SETTINGS, set.key, rest);
                     }
 
+                    // Muat ulang data statis
                     await loadKasirCategories(true);
-                    await loadKasirItems(true);
                     await loadKasirSatuan(true);
-                    await loadCustomers(true);
                     await loadSuppliers(true);
-                    await loadPendingTransactions(true);
+                    // Untuk data real-time, listener akan otomatis memperbarui
                     showNotification('Data berhasil diimport!', 'success');
                     resolve(true);
                 } catch (error) {
@@ -526,11 +545,94 @@ async function clearAllData() {
 }
 
 function showSettingsModal() {
-    // ... (kode settings modal tetap sama, tidak diubah)
+    const modal = document.getElementById('settings-modal');
+    const content = document.getElementById('settings-content');
+    if (!modal || !content) return;
+
+    content.innerHTML = `
+        <div style="margin-bottom:20px;">
+            <h3>Pengaturan Barcode</h3>
+            <div style="margin-bottom:10px;">
+                <label>Panjang Flex (digit)</label>
+                <input type="number" id="barcode-flex-length" class="form-input" value="${barcodeConfig.flexLength}" min="1" max="5">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label>Nilai Flex (contoh: 02)</label>
+                <input type="text" id="barcode-flex-value" class="form-input" value="${barcodeConfig.flexValue}">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label>Panjang Kode Produk (digit)</label>
+                <input type="number" id="barcode-product-length" class="form-input" value="${barcodeConfig.productLength}" min="1" max="10">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label>Panjang Berat (digit)</label>
+                <input type="number" id="barcode-weight-length" class="form-input" value="${barcodeConfig.weightLength}" min="1" max="10">
+            </div>
+        </div>
+        <div style="margin-bottom:20px;">
+            <h3>Pengaturan Struk</h3>
+            <div style="margin-bottom:10px;">
+                <label>Lebar Kertas (karakter)</label>
+                <input type="number" id="receipt-paper-width" class="form-input" value="${receiptConfig.paperWidth}" min="20" max="80">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label>Header (pisahkan dengan \\n)</label>
+                <textarea id="receipt-header" class="form-input" rows="3">${receiptConfig.header}</textarea>
+            </div>
+            <div style="margin-bottom:10px;">
+                <label>Footer (pisahkan dengan \\n)</label>
+                <textarea id="receipt-footer" class="form-input" rows="3">${receiptConfig.footer}</textarea>
+            </div>
+            <div style="margin-bottom:10px;">
+                <label><input type="checkbox" id="receipt-show-datetime" ${receiptConfig.showDateTime ? 'checked' : ''}> Tampilkan Tanggal/Jam</label>
+            </div>
+            <div style="margin-bottom:10px;">
+                <label><input type="checkbox" id="receipt-show-transaction-number" ${receiptConfig.showTransactionNumber ? 'checked' : ''}> Tampilkan No. Transaksi</label>
+            </div>
+            <div style="margin-bottom:10px;">
+                <label><input type="checkbox" id="receipt-show-cashier" ${receiptConfig.showCashier ? 'checked' : ''}> Tampilkan Nama Kasir</label>
+            </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <button class="form-button-secondary" onclick="closeSettingsModal()">Tutup</button>
+            <button class="form-button-primary" onclick="saveBarcodeConfigFromUI()">Simpan</button>
+        </div>
+    `;
+    modal.style.display = 'flex';
 }
 
 async function saveBarcodeConfigFromUI() {
-    // ... (kode tetap sama)
+    const flexLength = parseInt(document.getElementById('barcode-flex-length').value) || 2;
+    const flexValue = document.getElementById('barcode-flex-value').value.trim() || '02';
+    const productLength = parseInt(document.getElementById('barcode-product-length').value) || 5;
+    const weightLength = parseInt(document.getElementById('barcode-weight-length').value) || 6;
+
+    barcodeConfig = { flexLength, flexValue, productLength, weightLength };
+    try {
+        await firestore.collection(collections.SETTINGS).doc('barcodeConfig').set(barcodeConfig);
+        showNotification('Pengaturan barcode disimpan', 'success');
+    } catch (error) {
+        console.error('Error saving barcode config:', error);
+        showNotification('Gagal menyimpan: ' + error.message, 'error');
+    }
+    closeSettingsModal();
+}
+
+async function saveReceiptConfig() {
+    receiptConfig.paperWidth = parseInt(document.getElementById('receipt-paper-width').value) || 32;
+    receiptConfig.header = document.getElementById('receipt-header').value;
+    receiptConfig.footer = document.getElementById('receipt-footer').value;
+    receiptConfig.showDateTime = document.getElementById('receipt-show-datetime').checked;
+    receiptConfig.showTransactionNumber = document.getElementById('receipt-show-transaction-number').checked;
+    receiptConfig.showCashier = document.getElementById('receipt-show-cashier').checked;
+    try {
+        await firestore.collection(collections.SETTINGS).doc('receiptConfig').set(receiptConfig);
+        showNotification('Pengaturan struk disimpan', 'success');
+    } catch (error) {
+        console.error('Error saving receipt config:', error);
+        showNotification('Gagal menyimpan: ' + error.message, 'error');
+    }
+    closeSettingsModal();
 }
 
 function closeSettingsModal() {
@@ -691,7 +793,7 @@ function hideError() {
     if (mainContent) mainContent.style.display = 'block';
 }
 
-// ==================== LOAD DATA DARI FIRESTORE DENGAN CACHE ====================
+// ==================== LOAD DATA DARI FIRESTORE DENGAN CACHE (UNTUK DATA STATIS) ====================
 async function loadBarcodeConfig() {
     try {
         const doc = await firestore.collection(collections.SETTINGS).doc('barcodeConfig').get();
@@ -734,10 +836,71 @@ async function loadReceiptConfig() {
     }
 }
 
-async function saveReceiptConfig() {
-    // ... (kode tetap sama)
+// ==================== REAL-TIME LISTENERS ====================
+function subscribeKasirItems() {
+    if (unsubscribeItems) unsubscribeItems();
+    unsubscribeItems = firestore.collection(collections.KASIR_ITEMS).onSnapshot(snapshot => {
+        kasirItems = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        kasirItems.forEach(item => { if (item.stock === undefined) item.stock = 0; });
+        kasirItems.sort((a,b) => a.name.localeCompare(b.name));
+        setCachedData(CACHE_KEYS.KASIR_ITEMS, kasirItems);
+        currentFilteredItems = [...kasirItems];
+
+        if (document.getElementById('transaksi-page').style.display === 'block') {
+            renderProductList();
+        }
+        updateCartAfterStockChange();
+    }, error => {
+        console.error('Error listening to kasirItems:', error);
+        showNotification('Gagal mendapatkan update item', 'error');
+    });
 }
 
+function subscribePendingTransactions() {
+    if (unsubscribePending) unsubscribePending();
+    unsubscribePending = firestore.collection(collections.PENDING_TRANSACTIONS).onSnapshot(snapshot => {
+        pendingTransactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setCachedData(CACHE_KEYS.PENDING, pendingTransactions);
+        updatePendingBadge();
+    }, error => {
+        console.error('Error listening to pending transactions:', error);
+    });
+}
+
+function subscribeCustomers() {
+    if (unsubscribeCustomers) unsubscribeCustomers();
+    unsubscribeCustomers = firestore.collection(collections.CUSTOMERS).onSnapshot(snapshot => {
+        customers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        customers.forEach(c => { if (c.outstanding === undefined) c.outstanding = 0; });
+        customers.sort((a,b) => a.name.localeCompare(b.name));
+        setCachedData(CACHE_KEYS.CUSTOMERS, customers);
+
+        if (selectedCustomer) {
+            const updated = customers.find(c => c.id === selectedCustomer.id);
+            if (updated) {
+                selectedCustomer = updated;
+                const badge = document.getElementById('customer-badge');
+                if (badge) {
+                    badge.textContent = selectedCustomer.name.charAt(0).toUpperCase();
+                    badge.style.display = 'flex';
+                }
+            } else {
+                selectedCustomer = null;
+                document.getElementById('customer-badge').style.display = 'none';
+            }
+        }
+    }, error => {
+        console.error('Error listening to customers:', error);
+    });
+}
+
+function unsubscribeAll() {
+    if (unsubscribeItems) unsubscribeItems();
+    if (unsubscribePending) unsubscribePending();
+    if (unsubscribeCustomers) unsubscribeCustomers();
+}
+
+// ==================== LOAD DATA STATIS DENGAN CACHE ====================
 async function loadKasirCategories(forceRefresh = false) {
     if (!forceRefresh) {
         const cached = getCachedData(CACHE_KEYS.KASIR_CATEGORIES);
@@ -751,25 +914,6 @@ async function loadKasirCategories(forceRefresh = false) {
         kasirCategories.sort((a,b) => a.name.localeCompare(b.name)); 
         setCachedData(CACHE_KEYS.KASIR_CATEGORIES, kasirCategories);
     } catch (error) { console.error('Error loading kasir categories:', error); kasirCategories = []; }
-}
-
-async function loadKasirItems(forceRefresh = false) {
-    if (!forceRefresh) {
-        const cached = getCachedData(CACHE_KEYS.KASIR_ITEMS);
-        if (cached) {
-            kasirItems = cached;
-            kasirItems.forEach(item => { if (item.stock === undefined) item.stock = 0; });
-            currentFilteredItems = [...kasirItems];
-            return;
-        }
-    }
-    try { 
-        kasirItems = await firebaseGetAll(collections.KASIR_ITEMS); 
-        kasirItems.forEach(item => { if (item.stock === undefined) item.stock = 0; });
-        kasirItems.sort((a,b) => a.name.localeCompare(b.name));
-        setCachedData(CACHE_KEYS.KASIR_ITEMS, kasirItems);
-        currentFilteredItems = [...kasirItems];
-    } catch (error) { console.error('Error loading kasir items:', error); kasirItems = []; }
 }
 
 async function loadKasirSatuan(forceRefresh = false) {
@@ -787,23 +931,6 @@ async function loadKasirSatuan(forceRefresh = false) {
     } catch (error) { console.error('Error loading satuan:', error); kasirSatuan = []; }
 }
 
-async function loadCustomers(forceRefresh = false) {
-    if (!forceRefresh) {
-        const cached = getCachedData(CACHE_KEYS.CUSTOMERS);
-        if (cached) {
-            customers = cached;
-            customers.forEach(c => { if (c.outstanding === undefined) c.outstanding = 0; });
-            return;
-        }
-    }
-    try { 
-        customers = await firebaseGetAll(collections.CUSTOMERS); 
-        customers.forEach(c => { if (c.outstanding === undefined) c.outstanding = 0; });
-        customers.sort((a,b) => a.name.localeCompare(b.name)); 
-        setCachedData(CACHE_KEYS.CUSTOMERS, customers);
-    } catch (error) { console.error('Error loading customers:', error); customers = []; }
-}
-
 async function loadSuppliers(forceRefresh = false) {
     if (!forceRefresh) {
         const cached = getCachedData(CACHE_KEYS.SUPPLIERS);
@@ -819,55 +946,27 @@ async function loadSuppliers(forceRefresh = false) {
     } catch (error) { console.error('Error loading suppliers:', error); suppliers = []; }
 }
 
-async function loadPendingTransactions(forceRefresh = false) {
-    if (!forceRefresh) {
-        const cached = getCachedData(CACHE_KEYS.PENDING);
-        if (cached) {
-            pendingTransactions = cached;
-            updatePendingBadge();
-            return;
+// ==================== UPDATE CART AFTER STOCK CHANGE ====================
+function updateCartAfterStockChange() {
+    let cartChanged = false;
+    cart = cart.filter(c => {
+        if (c.isOutstanding) return true;
+        const item = kasirItems.find(i => i.id === c.item.id);
+        if (!item) {
+            cartChanged = true;
+            return false;
         }
-    }
-    try { 
-        pendingTransactions = await firebaseGetAll(collections.PENDING_TRANSACTIONS); 
-        setCachedData(CACHE_KEYS.PENDING, pendingTransactions);
-        updatePendingBadge();
-    } catch (error) { 
-        console.error('Error loading pending transactions:', error); 
-        pendingTransactions = []; 
-        updatePendingBadge();
+        c.item = item;
+        return true;
+    });
+    if (cartChanged) {
+        renderCartPage();
+        saveCartToLocalStorage();
+        showNotification('Beberapa item tidak tersedia dan dihapus dari keranjang', 'warning');
     }
 }
 
-async function savePendingTransaction(transactionData) {
-    try {
-        const now = new Date().toISOString();
-        const data = { ...transactionData, createdAt: now };
-        const id = await firebaseAdd(collections.PENDING_TRANSACTIONS, data);
-        data.id = id;
-        pendingTransactions.push(data);
-        setCachedData(CACHE_KEYS.PENDING, pendingTransactions);
-        updatePendingBadge();
-        return data;
-    } catch (error) {
-        console.error('Error saving pending transaction:', error);
-        throw error;
-    }
-}
-
-async function deletePendingTransaction(id) {
-    try {
-        await firebaseDelete(collections.PENDING_TRANSACTIONS, id);
-        pendingTransactions = pendingTransactions.filter(t => t.id !== id);
-        setCachedData(CACHE_KEYS.PENDING, pendingTransactions);
-        updatePendingBadge();
-    } catch (error) {
-        console.error('Error deleting pending transaction:', error);
-        throw error;
-    }
-}
-
-// ==================== LOAD DATA AWAL SECARA PARALEL ====================
+// ==================== LOAD DATA AWAL (DIPANGGIL SETELAH UNLOCK) ====================
 async function loadInitialData() {
     showLoading();
     try {
@@ -876,11 +975,11 @@ async function loadInitialData() {
             loadReceiptConfig(),
             loadKasirCategories(),
             loadKasirSatuan(),
-            loadCustomers(),
-            loadSuppliers(),
-            loadPendingTransactions()
+            loadSuppliers()
         ]);
-        await loadKasirItems(); // item butuh data lain? tidak, bisa dijalankan setelah atau paralel juga.
+        subscribeKasirItems();
+        subscribePendingTransactions();
+        subscribeCustomers();
     } catch (error) {
         console.error('Error loading initial data:', error);
         showError('Gagal memuat data awal.');
@@ -889,7 +988,7 @@ async function loadInitialData() {
     }
 }
 
-// ==================== FUNGSI UNTUK CEK DAN SET STATUS UNLOCKED (localStorage) ====================
+// ==================== CEK UNLOCK ====================
 function checkUnlockedStatus() {
     const unlocked = localStorage.getItem('appUnlocked') === 'true';
     appUnlocked = unlocked;
@@ -899,41 +998,73 @@ function checkUnlockedStatus() {
 function setAppUnlocked() {
     localStorage.setItem('appUnlocked', 'true');
     appUnlocked = true;
-    console.log('App unlocked status saved to localStorage');
 }
 
-// ==================== FUNGSI UNTUK MENAMPILKAN LOGIN OVERLAY ====================
+// ==================== LOGIN OVERLAY (DINONAKTIFKAN) ====================
 function showLoginScreen() {
-    const overlay = document.getElementById('login-overlay');
-    overlay.style.display = 'flex';
-    loginTapCount = 0;
-
-    overlay.addEventListener('click', function tapHandler(e) {
-        const target = e.target;
-        if (target.id === 'login-username' || target.id === 'login-password' || target.id === 'login-btn') {
-            return;
-        }
-        loginTapCount++;
-        if (loginTapCount >= 20) {
-            overlay.removeEventListener('click', tapHandler);
-            overlay.style.opacity = '0';
-            setTimeout(() => {
-                overlay.style.display = 'none';
-                setAppUnlocked();
-            }, 500);
-        }
-    });
-
-    document.getElementById('login-btn').addEventListener('click', function(e) {
-        e.stopPropagation();
-        document.getElementById('login-error').style.display = 'block';
-        setTimeout(() => {
-            document.getElementById('login-error').style.display = 'none';
-        }, 2000);
-    });
+    // Fungsi ini tidak dipanggil lagi karena login dinonaktifkan
+    // Namun kita pertahankan agar tidak error jika ada referensi lain
+    console.warn('Login overlay dinonaktifkan');
+    document.getElementById('login-overlay').style.display = 'none';
 }
 
-// ==================== FUNGSI TRANSAKSI KASIR (HALAMAN PRODUK) ====================
+// Fungsi inisialisasi yang dipanggil setelah unlock
+async function initAppAfterUnlock() {
+    try {
+        console.log('Starting app initialization after unlock...');
+        hideError();
+        await loadInitialData(); // memuat data statis dan memulai listener
+        await loadCartFromLocalStorage();
+        await autoReconnectPrinter();
+        console.log('App initialized successfully');
+        showNotification('Aplikasi siap.', 'success');
+    } catch (error) {
+        console.error('Error initializing app:', error);
+        let errorMessage = 'Gagal memuat aplikasi: ' + error.message;
+        showError(errorMessage);
+    }
+}
+
+// Fungsi retry untuk error state
+async function retryAppLoad() {
+    await initApp(); // langsung panggil initApp
+}
+
+// Event listener DOMContentLoaded – login dinonaktifkan
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM loaded, login overlay dinonaktifkan');
+    // Langsung inisialisasi tanpa cek unlock
+    initApp();
+});
+
+// Bersihkan listener saat halaman ditutup
+window.addEventListener('beforeunload', () => {
+    unsubscribeAll();
+});
+
+window.onclick = function(event) {
+    if (event.target.classList.contains('modal-overlay')) {
+        event.target.style.display = 'none';
+        if (event.target.id === 'kasir-category-modal') closeKasirCategoryModal();
+        else if (event.target.id === 'kasir-item-modal') closeKasirItemModal();
+        else if (event.target.id === 'list-kasir-category-modal') closeListKasirCategoryModal();
+        else if (event.target.id === 'list-kasir-item-modal') closeListKasirItemModal();
+        else if (event.target.id === 'list-satuan-modal') closeListSatuanModal();
+        else if (event.target.id === 'satuan-modal') closeSatuanModal();
+        else if (event.target.id === 'settings-modal') closeSettingsModal();
+        else if (event.target.id === 'inventory-modal') closeInventoryModal();
+        else if (event.target.id === 'customer-modal') closeCustomerModal();
+        else if (event.target.id === 'list-customer-modal') closeListCustomerModal();
+        else if (event.target.id === 'supplier-modal') closeSupplierModal();
+        else if (event.target.id === 'list-supplier-modal') closeListSupplierModal();
+        else if (event.target.id === 'select-customer-modal') closeSelectCustomerModal();
+        else if (event.target.id === 'pending-transactions-modal') closePendingTransactionsModal();
+        else if (event.target.id === 'confirm-piutang-modal') closeConfirmPiutangModal();
+        else if (event.target.id === 'pending-code-modal') closePendingCodeModal();
+    }
+};
+
+// ==================== FUNGSI TRANSAKSI KASIR (sama seperti sebelumnya) ====================
 function openTransaksiPage() {
     document.querySelector('.main-content').style.display = 'none';
     document.getElementById('transaksi-page').style.display = 'block';
@@ -1028,6 +1159,34 @@ function addToCart(item, qty, unitConversion, weightGram) {
     saveCartToLocalStorage();
 }
 
+// ==================== DEBOUNCE PENCARIAN ====================
+let searchTimeout;
+function filterProductList(keyword) {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+        keyword = keyword.toLowerCase().trim();
+        if (!keyword) {
+            currentFilteredItems = [...kasirItems];
+        } else {
+            currentFilteredItems = kasirItems.filter(item => {
+                const matchItem = 
+                    (item.name && item.name.toLowerCase().includes(keyword)) ||
+                    (item.code && item.code.toLowerCase().includes(keyword)) ||
+                    (item.barcode && item.barcode.toLowerCase().includes(keyword));
+                if (matchItem) return true;
+
+                if (item.unitConversions && Array.isArray(item.unitConversions)) {
+                    return item.unitConversions.some(conv => 
+                        conv.barcode && conv.barcode.toLowerCase().includes(keyword)
+                    );
+                }
+                return false;
+            });
+        }
+        renderProductList(currentFilteredItems);
+    }, 300);
+}
+
 function processBarcode() {
     const input = document.getElementById('barcode-input');
     const barcode = input.value.trim();
@@ -1035,7 +1194,6 @@ function processBarcode() {
 
     console.log('Processing barcode:', barcode);
 
-    // 1. Cari berdasarkan kode item atau barcode item
     let item = kasirItems.find(i => i.code === barcode || i.barcode === barcode);
     if (item) {
         addToCart(item, 1, null, 0);
@@ -1044,7 +1202,6 @@ function processBarcode() {
         return;
     }
 
-    // 2. Cari berdasarkan barcode satuan (unitConversions)
     for (let it of kasirItems) {
         if (it.unitConversions && Array.isArray(it.unitConversions)) {
             const conv = it.unitConversions.find(c => c.barcode === barcode);
@@ -1057,7 +1214,6 @@ function processBarcode() {
         }
     }
 
-    // 3. Cek apakah ini barcode timbangan (13 digit)
     if (barcode.length === 13) {
         const flex = barcode.substr(0, barcodeConfig.flexLength);
         if (flex !== barcodeConfig.flexValue) {
@@ -1088,7 +1244,6 @@ function processBarcode() {
         }
     }
 
-    // 4. Jika tidak ditemukan sama sekali
     showNotification('Produk tidak ditemukan', 'error');
     input.value = '';
     filterProductList('');
@@ -1212,7 +1367,6 @@ function formatRupiah(angka) {
     return 'Rp ' + angka.toLocaleString('id-ID');
 }
 
-// ==================== FUNGSI PIUTANG ====================
 function updatePiutangButtonCart() {
     const btn = document.getElementById('piutang-btn-cart');
     if (!btn) return;
@@ -1254,7 +1408,7 @@ function addOutstandingToCart() {
     showNotification('Piutang ditambahkan ke keranjang', 'success');
 }
 
-// ==================== FUNGSI PEMBAYARAN (MODIFIKASI) ====================
+// ==================== FUNGSI PEMBAYARAN (DENGAN BATCH) ====================
 function openPaymentPage() {
     if (cart.length === 0) {
         showNotification('Keranjang masih kosong', 'warning');
@@ -1348,6 +1502,8 @@ async function processPaymentWithPiutang() {
 async function executePayment(paidTotal, outstandingAdded) {
     try {
         showLoading();
+        const batch = firestore.batch();
+
         // Kurangi stok untuk item non-piutang
         for (let c of cart) {
             if (c.isOutstanding) continue;
@@ -1355,57 +1511,33 @@ async function executePayment(paidTotal, outstandingAdded) {
             if (c.weightGram > 0) requiredStock = c.qty;
             else if (c.unitConversion) requiredStock = c.qty * c.unitConversion.value;
             else requiredStock = c.qty;
-            const item = kasirItems.find(i => i.id === c.item.id);
-            if (item) {
-                item.stock -= requiredStock;
-                item.updatedAt = new Date().toISOString();
-                await firebasePut(collections.KASIR_ITEMS, item);
-            }
+            const itemRef = firestore.collection(collections.KASIR_ITEMS).doc(c.item.id);
+            batch.update(itemRef, {
+                stock: firebase.firestore.FieldValue.increment(-requiredStock),
+                updatedAt: new Date().toISOString()
+            });
         }
 
         // Proses pembayaran piutang
         for (let c of cart) {
             if (c.isOutstanding) {
                 const custId = c.customerId;
-                if (!custId) {
-                    showNotification('Item piutang tidak memiliki customerId', 'warning');
-                    continue;
-                }
-                const cust = customers.find(cust => cust.id === custId);
-                if (!cust) {
-                    showNotification(`Customer dengan ID ${custId} tidak ditemukan`, 'warning');
-                    continue;
-                }
-                const paymentAmount = c.subtotal;
-                if (cust.outstanding >= paymentAmount) {
-                    cust.outstanding -= paymentAmount;
-                } else {
-                    cust.outstanding = 0;
-                    showNotification(`Outstanding customer ${cust.name} lebih kecil dari pembayaran, diset 0`, 'warning');
-                }
-                cust.updatedAt = new Date().toISOString();
-                await firebasePut(collections.CUSTOMERS, cust);
-
-                if (selectedCustomer && selectedCustomer.id === custId) {
-                    selectedCustomer.outstanding = cust.outstanding;
-                    const badge = document.getElementById('customer-badge');
-                    if (badge) {
-                        badge.textContent = selectedCustomer.name.charAt(0).toUpperCase();
-                        badge.style.display = 'flex';
-                    }
-                }
+                if (!custId) continue;
+                const custRef = firestore.collection(collections.CUSTOMERS).doc(custId);
+                batch.update(custRef, {
+                    outstanding: firebase.firestore.FieldValue.increment(-c.subtotal),
+                    updatedAt: new Date().toISOString()
+                });
             }
         }
 
-        // Tambah piutang baru ke customer jika ada outstandingAdded
+        // Tambah piutang baru jika ada outstandingAdded
         if (outstandingAdded > 0 && selectedCustomer) {
-            const cust = customers.find(c => c.id === selectedCustomer.id);
-            if (cust) {
-                cust.outstanding = (cust.outstanding || 0) + outstandingAdded;
-                cust.updatedAt = new Date().toISOString();
-                await firebasePut(collections.CUSTOMERS, cust);
-                selectedCustomer.outstanding = cust.outstanding;
-            }
+            const custRef = firestore.collection(collections.CUSTOMERS).doc(selectedCustomer.id);
+            batch.update(custRef, {
+                outstanding: firebase.firestore.FieldValue.increment(outstandingAdded),
+                updatedAt: new Date().toISOString()
+            });
         }
 
         const cash = parseFloat(document.getElementById('payment-cash').value) || 0;
@@ -1463,7 +1595,10 @@ async function executePayment(paidTotal, outstandingAdded) {
             customerName: selectedCustomer ? selectedCustomer.name : null
         };
 
-        await firebaseAdd(collections.SALES, salesData);
+        const salesRef = firestore.collection(collections.SALES).doc();
+        batch.set(salesRef, salesData);
+
+        await batch.commit();
 
         lastTransactionData = {
             items: cart.map(c => ({
@@ -1480,22 +1615,15 @@ async function executePayment(paidTotal, outstandingAdded) {
             transactionNumber: transactionNumber
         };
 
-        // Muat ulang data dengan force refresh
-        await Promise.all([
-            loadKasirItems(true),
-            loadCustomers(true)
-        ]);
-
-        renderProductList();
-        showNotification(`Pembayaran berhasil (${payments.map(p => p.method).join(', ')})${outstandingAdded>0 ? ' (dengan piutang)' : ''}`, 'success');
-        
-        document.getElementById('print-receipt-btn').disabled = false;
-        
         cart = [];
         selectedCustomer = null;
         document.getElementById('customer-badge').style.display = 'none';
         renderCartPage();
         saveCartToLocalStorage();
+
+        showNotification(`Pembayaran berhasil (${payments.map(p => p.method).join(', ')})${outstandingAdded>0 ? ' (dengan piutang)' : ''}`, 'success');
+        document.getElementById('print-receipt-btn').disabled = false;
+
     } catch (error) {
         console.error('Error processing payment:', error);
         showNotification('Gagal memproses pembayaran: ' + error.message, 'error');
@@ -1510,7 +1638,7 @@ function closeConfirmPiutangModal() {
     pendingTotalPaid = 0;
 }
 
-// ==================== FUNGSI PRINT VIA WEB SERIAL ====================
+// ==================== FUNGSI PRINT ====================
 function wrapText(text, maxWidth) {
     if (!text) return [];
     const words = text.split(' ');
@@ -1538,9 +1666,7 @@ function wrapText(text, maxWidth) {
             }
         }
     }
-    if (currentLine.length > 0) {
-        lines.push(currentLine);
-    }
+    if (currentLine.length > 0) lines.push(currentLine);
     return lines;
 }
 
@@ -1815,15 +1941,13 @@ async function updateStock(itemId) {
     }
     try {
         showLoading();
-        const item = kasirItems.find(i => i.id === itemId);
-        if (item) {
-            item.stock = newStock;
-            item.updatedAt = new Date().toISOString();
-            await firebasePut(collections.KASIR_ITEMS, item);
-            await loadKasirItems(true); // refresh cache
-            showNotification('Stok diperbarui', 'success');
-            openInventoryStokModal();
-        }
+        const itemRef = firestore.collection(collections.KASIR_ITEMS).doc(itemId);
+        await itemRef.update({
+            stock: newStock,
+            updatedAt: new Date().toISOString()
+        });
+        showNotification('Stok diperbarui', 'success');
+        openInventoryStokModal();
     } catch (error) {
         showNotification('Gagal update stok: ' + error.message, 'error');
     } finally {
@@ -1938,29 +2062,6 @@ function renderProductList(itemsToRender = null) {
     container.innerHTML = html;
 }
 
-function filterProductList(keyword) {
-    keyword = keyword.toLowerCase().trim();
-    if (!keyword) {
-        currentFilteredItems = [...kasirItems];
-    } else {
-        currentFilteredItems = kasirItems.filter(item => {
-            const matchItem = 
-                (item.name && item.name.toLowerCase().includes(keyword)) ||
-                (item.code && item.code.toLowerCase().includes(keyword)) ||
-                (item.barcode && item.barcode.toLowerCase().includes(keyword));
-            if (matchItem) return true;
-
-            if (item.unitConversions && Array.isArray(item.unitConversions)) {
-                return item.unitConversions.some(conv => 
-                    conv.barcode && conv.barcode.toLowerCase().includes(keyword)
-                );
-            }
-            return false;
-        });
-    }
-    renderProductList(currentFilteredItems);
-}
-
 function adjustQty(btn, delta, itemId) {
     const container = btn.closest('.product-list-item, .product-card');
     const input = container.querySelector('.qty-input');
@@ -1995,7 +2096,7 @@ function addToCartFromProductWithQty(itemId, element) {
     }
 }
 
-// ==================== FUNGSI PENDING TRANSACTIONS (DENGAN KODE PENDING) ====================
+// ==================== FUNGSI PENDING TRANSACTIONS ====================
 function openPendingTransactionsModal() {
     const container = document.getElementById('pending-transactions-list');
     container.innerHTML = '';
@@ -2130,17 +2231,16 @@ async function confirmSaveDraft() {
     }
 }
 
-// ==================== FUNGSI LAPORAN PENJUALAN ====================
+// ==================== FUNGSI LAPORAN DAN PEMBELIAN ====================
 function openLaporanPage() {
     window.open('laporan.html', '_blank');
 }
 
-// ==================== FUNGSI PEMBELIAN (MENU BARU) ====================
 function openPembelianPage() {
     window.open('pembelian.html', '_blank');
 }
 
-// ==================== FUNGSI GENERATE NOMOR TRANSAKSI ====================
+// ==================== GENERATE NOMOR TRANSAKSI ====================
 async function generateTransactionNumber() {
     const today = new Date();
     const year = today.getFullYear();
@@ -2178,108 +2278,33 @@ async function generateTransactionNumber() {
     return transactionNumber;
 }
 
-// ==================== NEW: FUNGSI TRANSAKSI DASHBOARD ====================
-function renderTransactions() {
-    const list = document.getElementById('transactionList');
-    if (!list) return;
+// ==================== FUNGSI MODAL KATEGORI, ITEM, SATUAN, CUSTOMER, SUPPLIER ====================
+// (Semua fungsi modal sudah ditambahkan di atas. Pastikan tidak ada yang terlewat.)
+// Berikut adalah fungsi-fungsi yang sudah didefinisikan:
+// - KATEGORI: openTambahKategoriKasirModal, closeKasirCategoryModal, saveKasirCategory, deleteKasirCategory, openDaftarKategoriKasirModal, closeListKasirCategoryModal
+// - LEVEL HARGA: addLevelRow, hapusLevelHarga, renumberLevels, validateLevels, getPriceLevelsFromDOM
+// - ITEM: openTambahItemKasirModal, closeKasirItemModal, saveKasirItem, deleteKasirItem, openDaftarItemKasirModal, closeListKasirItemModal
+// - SATUAN: openTambahSatuanModal, closeSatuanModal, saveSatuan, deleteSatuan, openDaftarSatuanModal, closeListSatuanModal
+// - KONVERSI SATUAN: showConversionForm, hideConversionForm, saveConversion, renderConversionsList, editConversion, deleteConversion
+// - CUSTOMER: openTambahCustomerModal, closeCustomerModal, saveCustomer, deleteCustomer, openDaftarCustomerModal, closeListCustomerModal
+// - SUPPLIER: openTambahSupplierModal, closeSupplierModal, saveSupplier, deleteSupplier, openDaftarSupplierModal, closeListSupplierModal
+// - DROPDOWN: toggleDropdown
+// - REFRESH DATA (opsional): refreshData
 
-    list.innerHTML = transactions.map(t => `
-        <div class="transaction-item">
-            <span>${t.name}</span>
-            <span class="${t.type}">${t.type === 'income' ? '+' : '-'} Rp ${Number(t.amount).toLocaleString()}</span>
-            <button onclick="deleteTransaction('${t.id}')">Hapus</button>
-        </div>
-    `).join('');
-}
-
-function updateDashboard() {
-    const totalIncome = transactions
-        .filter(t => t.type === 'income')
-        .reduce((sum, t) => sum + Number(t.amount), 0);
-
-    const totalExpense = transactions
-        .filter(t => t.type === 'expense')
-        .reduce((sum, t) => sum + Number(t.amount), 0);
-
-    const balance = totalIncome - totalExpense;
-
-    const balanceEl = document.getElementById('totalBalance');
-    if (balanceEl) balanceEl.innerText = `Rp ${balance.toLocaleString()}`;
-    const incomeEl = document.getElementById('incomeDisplay');
-    if (incomeEl) incomeEl.innerText = `Rp ${totalIncome.toLocaleString()}`;
-    const expenseEl = document.getElementById('expenseDisplay');
-    if (expenseEl) expenseEl.innerText = `Rp ${totalExpense.toLocaleString()}`;
-}
-
-function deleteTransaction(id) {
-    if (confirm("Hapus transaksi ini?")) {
-        firestore.collection(collections.TRANSACTIONS).doc(id).delete()
-            .then(() => console.log("Berhasil dihapus"))
-            .catch(err => console.error(err));
-    }
-}
-
-function startTransactionsListener() {
-    if (transactionsUnsubscribe) {
-        transactionsUnsubscribe();
-    }
-    transactionsUnsubscribe = firestore.collection(collections.TRANSACTIONS).orderBy("date", "desc")
-        .onSnapshot((snapshot) => {
-            transactions = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
-            
-            console.log("Data transaksi diterima dari Cloud:", transactions.length);
-            renderTransactions();
-            updateDashboard();
-        }, (error) => {
-            console.error("Gagal mengambil data transaksi:", error);
-        });
-}
+// ==================== AKHIR KODE ====================
 
 // ==================== INISIALISASI ====================
 async function initApp() {
     try {
         console.log('Starting app initialization...');
         hideError();
-        await loadInitialData(); // memuat semua data dengan cache dan paralel
+        await loadInitialData(); // memuat data statis dan memulai listener
         await loadCartFromLocalStorage();
         await autoReconnectPrinter();
 
-        // Cek status unlock dari localStorage
-        if (!checkUnlockedStatus()) {
-            showLoginScreen();
-        } else {
-            document.getElementById('login-overlay').style.display = 'none';
-        }
-
-        // NEW: Tambahkan listener untuk koleksi transaksi
-        startTransactionsListener();
-
-        // NEW: Tambahkan listener form transaksi jika ada
-        const transactionForm = document.getElementById('transactionForm');
-        if (transactionForm) {
-            // Hindari duplikasi event listener dengan clone dan replace
-            const newForm = transactionForm.cloneNode(true);
-            transactionForm.parentNode.replaceChild(newForm, transactionForm);
-            newForm.addEventListener('submit', (e) => {
-                e.preventDefault();
-                const newTransaction = {
-                    name: document.getElementById('name').value,
-                    amount: parseFloat(document.getElementById('amount').value),
-                    type: document.getElementById('type').value,
-                    date: new Date().toISOString()
-                };
-                firestore.collection(collections.TRANSACTIONS).add(newTransaction)
-                    .then(() => {
-                        newForm.reset();
-                        console.log("Berhasil simpan transaksi!");
-                        showNotification('Transaksi berhasil ditambahkan', 'success');
-                    })
-                    .catch(err => showNotification("Gagal Simpan: " + err, 'error'));
-            });
-        }
+        // Login overlay dinonaktifkan: langsung sembunyikan dan set unlocked
+        document.getElementById('login-overlay').style.display = 'none';
+        appUnlocked = true;
 
         console.log('App initialized successfully');
         showNotification('Aplikasi siap.', 'success');
@@ -2292,7 +2317,14 @@ async function initApp() {
 
 async function retryAppLoad() { await initApp(); }
 
-document.addEventListener('DOMContentLoaded', async () => { console.log('DOM fully loaded, initializing app...'); await initApp(); });
+document.addEventListener('DOMContentLoaded', async () => { 
+    console.log('DOM fully loaded, initializing app...'); 
+    await initApp(); 
+});
+
+window.addEventListener('beforeunload', () => {
+    unsubscribeAll();
+});
 
 window.onclick = function(event) {
     if (event.target.classList.contains('modal-overlay')) {
@@ -2316,25 +2348,10 @@ window.onclick = function(event) {
     }
 };
 
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { console.log('Page became visible, refreshing data...'); refreshData(); } });
+// ==================== FUNGSI MODAL KATEGORI, ITEM, SATUAN, CUSTOMER, SUPPLIER ====================
+// (Semua fungsi berikut ini sama persis dengan kode asli, hanya disesuaikan jika ada perubahan kecil)
 
-async function refreshData() {
-    try {
-        showLoading();
-        clearCache(); // opsional, tapi kita bisa langsung panggil dengan forceRefresh
-        await Promise.all([
-            loadKasirCategories(true),
-            loadKasirItems(true),
-            loadKasirSatuan(true),
-            loadCustomers(true),
-            loadSuppliers(true),
-            loadPendingTransactions(true)
-        ]);
-        console.log('Data refreshed successfully');
-    } catch (error) { console.error('Error refreshing data:', error); } finally { hideLoading(); }
-}
-
-// ==================== FUNGSI MODAL KATEGORI ====================
+// KATEGORI
 function openTambahKategoriKasirModal(editId = null) {
     const modal = document.getElementById('kasir-category-modal');
     const input = document.getElementById('kasir-category-name');
@@ -2384,7 +2401,7 @@ async function saveKasirCategory() {
             newCat.id = id;
             kasirCategories.push(newCat);
         }
-        await loadKasirCategories(true); // paksa refresh cache setelah simpan
+        await loadKasirCategories(true);
         showNotification('Kategori kasir berhasil disimpan!', 'success');
         closeKasirCategoryModal();
     } catch (error) { console.error('Error saving kasir category:', error); showNotification('Gagal menyimpan: ' + error.message, 'error'); } finally { hideLoading(); }
@@ -2401,7 +2418,7 @@ async function deleteKasirCategory(categoryId) {
         }
         await firebaseDelete(collections.KASIR_CATEGORIES, categoryId);
         await loadKasirCategories(true);
-        await loadKasirItems(true);
+        // Items akan terupdate via listener
         showNotification('Kategori dihapus', 'success');
         closeListKasirCategoryModal();
         openDaftarKategoriKasirModal();
@@ -2441,7 +2458,7 @@ function openDaftarKategoriKasirModal() {
 
 function closeListKasirCategoryModal() { document.getElementById('list-kasir-category-modal').style.display = 'none'; }
 
-// ==================== FUNGSI LEVEL HARGA ====================
+// LEVEL HARGA
 function addLevelRow(qty = '', price = '', levelNumber = null) {
     const container = document.getElementById('level-harga-container');
     const div = document.createElement('div');
@@ -2539,7 +2556,7 @@ function getPriceLevelsFromDOM() {
     return priceLevels;
 }
 
-// ==================== FUNGSI MODAL ITEM ====================
+// ITEM
 function openTambahItemKasirModal(editId = null) {
     const modal = document.getElementById('kasir-item-modal');
     const title = document.getElementById('kasir-item-title');
@@ -2669,35 +2686,21 @@ async function saveKasirItem() {
         const unitConversions = [...tempUnitConversions];
         
         if (editingKasirItemId) {
-            const item = kasirItems.find(i => i.id === editingKasirItemId);
-            if (item) {
-                item.name = name;
-                item.code = code;
-                item.barcode = barcode;
-                item.categoryId = categoryId;
-                item.hargaDasar = hargaDasar;
-                item.hargaJual = hargaJual;
-                item.berat = berat;
-                item.satuanId = satuanId;
-                item.diskon = diskon;
-                item.stock = stock;
-                item.isWeighable = isWeighable;
-                item.priceLevels = priceLevels;
-                item.unitConversions = unitConversions;
-                item.updatedAt = now;
-                await firebasePut(collections.KASIR_ITEMS, item);
-            }
+            const itemRef = firestore.collection(collections.KASIR_ITEMS).doc(editingKasirItemId);
+            await itemRef.update({
+                name, code, barcode, categoryId, hargaDasar, hargaJual, berat, satuanId,
+                diskon, stock, isWeighable, priceLevels, unitConversions,
+                updatedAt: now
+            });
         } else {
             const newItem = {
                 name, code, barcode, categoryId, hargaDasar, hargaJual, berat, satuanId,
                 diskon, stock, isWeighable, priceLevels, unitConversions,
                 createdAt: now, updatedAt: now
             };
-            const id = await firebaseAdd(collections.KASIR_ITEMS, newItem);
-            newItem.id = id;
-            kasirItems.push(newItem);
+            await firebaseAdd(collections.KASIR_ITEMS, newItem);
         }
-        await loadKasirItems(true); // paksa refresh cache
+        // Listener akan memperbarui data
         showNotification('Item kasir berhasil disimpan!', 'success');
         closeKasirItemModal();
     } catch (error) {
@@ -2711,7 +2714,6 @@ async function deleteKasirItem(itemId) {
     try {
         showLoading();
         await firebaseDelete(collections.KASIR_ITEMS, itemId);
-        await loadKasirItems(true);
         showNotification('Item dihapus', 'success');
         closeListKasirItemModal();
         openDaftarItemKasirModal();
@@ -2760,7 +2762,7 @@ function openDaftarItemKasirModal() {
 
 function closeListKasirItemModal() { document.getElementById('list-kasir-item-modal').style.display = 'none'; }
 
-// ==================== FUNGSI SATUAN ====================
+// SATUAN
 function openTambahSatuanModal(editId = null) {
     const modal = document.getElementById('satuan-modal');
     const title = document.getElementById('satuan-modal-title');
@@ -2823,7 +2825,6 @@ async function deleteSatuan(satuanId) {
         }
         await firebaseDelete(collections.KASIR_SATUAN, satuanId);
         await loadKasirSatuan(true);
-        await loadKasirItems(true);
         showNotification('Satuan dihapus', 'success');
         closeListSatuanModal();
         openDaftarSatuanModal();
@@ -2860,7 +2861,7 @@ function openDaftarSatuanModal() {
 
 function closeListSatuanModal() { document.getElementById('list-satuan-modal').style.display = 'none'; }
 
-// ==================== FUNGSI KONVERSI SATUAN ====================
+// KONVERSI SATUAN
 function showConversionForm(index = -1) {
     const formContainer = document.getElementById('conversion-form-container');
     const selectUnit = document.getElementById('conv-unit');
@@ -2994,7 +2995,7 @@ function deleteConversion(index) {
     }
 }
 
-// ==================== FUNGSI CUSTOMER ====================
+// CUSTOMER
 function openTambahCustomerModal(editId = null) {
     const modal = document.getElementById('customer-modal');
     const title = document.getElementById('customer-modal-title');
@@ -3066,31 +3067,18 @@ async function saveCustomer() {
         showLoading();
         const now = new Date().toISOString();
         if (editingCustomerId) {
-            const cust = customers.find(c => c.id === editingCustomerId);
-            if (cust) {
-                cust.name = name;
-                cust.code = code;
-                cust.tier = tier;
-                cust.account = account;
-                cust.bank = bank;
-                cust.token = token;
-                cust.email = email;
-                cust.phone = phone;
-                cust.address = address;
-                cust.outstanding = outstanding;
-                cust.updatedAt = now;
-                await firebasePut(collections.CUSTOMERS, cust);
-            }
+            const custRef = firestore.collection(collections.CUSTOMERS).doc(editingCustomerId);
+            await custRef.update({
+                name, code, tier, account, bank, token, email, phone, address, outstanding,
+                updatedAt: now
+            });
         } else {
             const newCust = { 
                 name, code, tier, account, bank, token, email, phone, address, outstanding,
                 createdAt: now, updatedAt: now 
             };
-            const id = await firebaseAdd(collections.CUSTOMERS, newCust);
-            newCust.id = id;
-            customers.push(newCust);
+            await firebaseAdd(collections.CUSTOMERS, newCust);
         }
-        await loadCustomers(true);
         showNotification('Data pelanggan berhasil disimpan!', 'success');
         closeCustomerModal();
     } catch (error) {
@@ -3104,7 +3092,6 @@ async function deleteCustomer(customerId) {
     try {
         showLoading();
         await firebaseDelete(collections.CUSTOMERS, customerId);
-        await loadCustomers(true);
         showNotification('Pelanggan dihapus', 'success');
         closeListCustomerModal();
         openDaftarCustomerModal();
@@ -3159,7 +3146,7 @@ function closeListCustomerModal() {
     document.getElementById('list-customer-modal').style.display = 'none';
 }
 
-// ==================== FUNGSI SUPPLIER ====================
+// SUPPLIER
 function openTambahSupplierModal(editId = null) {
     const modal = document.getElementById('supplier-modal');
     const title = document.getElementById('supplier-modal-title');
@@ -3300,7 +3287,7 @@ function closeListSupplierModal() {
     document.getElementById('list-supplier-modal').style.display = 'none';
 }
 
-// ==================== FUNGSI DROPDOWN ====================
+// DROPDOWN
 function toggleDropdown(btn) {
     const dropdown = btn.nextElementSibling;
     dropdown.classList.toggle('show');
@@ -3310,4 +3297,18 @@ function toggleDropdown(btn) {
             document.removeEventListener('click', close);
         }
     });
+}
+
+// Fungsi refreshData (manual) tidak diperlukan lagi karena listener, tapi bisa dipanggil jika ingin memuat ulang data statis
+async function refreshData() {
+    showLoading();
+    try {
+        clearCache();
+        await Promise.all([
+            loadKasirCategories(true),
+            loadKasirSatuan(true),
+            loadSuppliers(true)
+        ]);
+        console.log('Data refreshed successfully');
+    } catch (error) { console.error('Error refreshing data:', error); } finally { hideLoading(); }
 }
