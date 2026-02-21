@@ -8,7 +8,8 @@ const collections = {
     SUPPLIERS: 'suppliers',
     PENDING_TRANSACTIONS: 'pendingTransactions',
     SALES: 'sales',
-    PURCHASES: 'purchases'
+    PURCHASES: 'purchases',
+    TRANSACTIONS: 'transaksi'  // NEW: koleksi untuk transaksi pribadi
 };
 
 // ==================== FUNGSI HELPER FIRESTORE ====================
@@ -344,6 +345,10 @@ let currentFilteredItems = [];
 let cart = [];
 let productViewMode = 'list';
 let lastTransactionData = null;
+
+// NEW: Variabel untuk transaksi dashboard
+let transactions = [];
+let transactionsUnsubscribe = null;
 
 // Variabel untuk printer serial
 let printerPort = null;
@@ -875,7 +880,7 @@ async function loadInitialData() {
             loadSuppliers(),
             loadPendingTransactions()
         ]);
-        await loadKasirItems(); // item butuh data lain? tidak, tapi bisa dijalankan setelah atau paralel juga.
+        await loadKasirItems(); // item butuh data lain? tidak, bisa dijalankan setelah atau paralel juga.
     } catch (error) {
         console.error('Error loading initial data:', error);
         showError('Gagal memuat data awal.');
@@ -2173,6 +2178,66 @@ async function generateTransactionNumber() {
     return transactionNumber;
 }
 
+// ==================== NEW: FUNGSI TRANSAKSI DASHBOARD ====================
+function renderTransactions() {
+    const list = document.getElementById('transactionList');
+    if (!list) return;
+
+    list.innerHTML = transactions.map(t => `
+        <div class="transaction-item">
+            <span>${t.name}</span>
+            <span class="${t.type}">${t.type === 'income' ? '+' : '-'} Rp ${Number(t.amount).toLocaleString()}</span>
+            <button onclick="deleteTransaction('${t.id}')">Hapus</button>
+        </div>
+    `).join('');
+}
+
+function updateDashboard() {
+    const totalIncome = transactions
+        .filter(t => t.type === 'income')
+        .reduce((sum, t) => sum + Number(t.amount), 0);
+
+    const totalExpense = transactions
+        .filter(t => t.type === 'expense')
+        .reduce((sum, t) => sum + Number(t.amount), 0);
+
+    const balance = totalIncome - totalExpense;
+
+    const balanceEl = document.getElementById('totalBalance');
+    if (balanceEl) balanceEl.innerText = `Rp ${balance.toLocaleString()}`;
+    const incomeEl = document.getElementById('incomeDisplay');
+    if (incomeEl) incomeEl.innerText = `Rp ${totalIncome.toLocaleString()}`;
+    const expenseEl = document.getElementById('expenseDisplay');
+    if (expenseEl) expenseEl.innerText = `Rp ${totalExpense.toLocaleString()}`;
+}
+
+function deleteTransaction(id) {
+    if (confirm("Hapus transaksi ini?")) {
+        firestore.collection(collections.TRANSACTIONS).doc(id).delete()
+            .then(() => console.log("Berhasil dihapus"))
+            .catch(err => console.error(err));
+    }
+}
+
+function startTransactionsListener() {
+    if (transactionsUnsubscribe) {
+        transactionsUnsubscribe();
+    }
+    transactionsUnsubscribe = firestore.collection(collections.TRANSACTIONS).orderBy("date", "desc")
+        .onSnapshot((snapshot) => {
+            transactions = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            
+            console.log("Data transaksi diterima dari Cloud:", transactions.length);
+            renderTransactions();
+            updateDashboard();
+        }, (error) => {
+            console.error("Gagal mengambil data transaksi:", error);
+        });
+}
+
 // ==================== INISIALISASI ====================
 async function initApp() {
     try {
@@ -2187,6 +2252,33 @@ async function initApp() {
             showLoginScreen();
         } else {
             document.getElementById('login-overlay').style.display = 'none';
+        }
+
+        // NEW: Tambahkan listener untuk koleksi transaksi
+        startTransactionsListener();
+
+        // NEW: Tambahkan listener form transaksi jika ada
+        const transactionForm = document.getElementById('transactionForm');
+        if (transactionForm) {
+            // Hindari duplikasi event listener dengan clone dan replace
+            const newForm = transactionForm.cloneNode(true);
+            transactionForm.parentNode.replaceChild(newForm, transactionForm);
+            newForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const newTransaction = {
+                    name: document.getElementById('name').value,
+                    amount: parseFloat(document.getElementById('amount').value),
+                    type: document.getElementById('type').value,
+                    date: new Date().toISOString()
+                };
+                firestore.collection(collections.TRANSACTIONS).add(newTransaction)
+                    .then(() => {
+                        newForm.reset();
+                        console.log("Berhasil simpan transaksi!");
+                        showNotification('Transaksi berhasil ditambahkan', 'success');
+                    })
+                    .catch(err => showNotification("Gagal Simpan: " + err, 'error'));
+            });
         }
 
         console.log('App initialized successfully');
